@@ -36,6 +36,7 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import mean_squared_error
 from matplotlib.colors import LogNorm
 
+os.system("cls")    #画面をクリア
 print ("Numpy version:{0}".format(np.__version__))
 print ("Scipy version:{0}".format(scipy.__version__))
 print ("Pyaudio version:{0}".format(pyaudio.__version__))
@@ -59,10 +60,10 @@ base_dir = os.path.dirname(__file__)    #カレントフォルダを強制指定
 """収音関連のパラメタ"""
 br = 8              #ビットレート 8推奨
 sr = 22050          #サンプリングレート(Hz) 20050推奨
-r_wait = 5          #トリガから収音開始までのウェイト(秒)
-r_len = 3           #収音時間(秒)
+r_wait = 5          #トリガから収音開始までのウェイト(秒) 増穂：14
+r_len = 3           #収音時間(秒)   増穂：5
 a_idx = None        #オーディオインデックス番号
-disp_spg = True     #収音後、スペクトログラムの表示を行うかどうか Falseは波形表示
+disp_spg = False     #収音後、スペクトログラムの表示を行うかどうか Falseは波形表示
 
 """データセット関連のパラメタ"""
 axis_freq = None        #スペクトログラムの周波数軸(リスト)
@@ -89,10 +90,10 @@ class Init_Boot:
     def __init__(self):
         #パス関連変数の生成
         self.base_dir = base_dir
-        self.data_dir = os.path.join(self.base_dir,data_dir)
+        self.data_dir = os.path.join(".\\",data_dir)
         self.save_dir = os.path.join(self.data_dir,save_dir)
-        self.model_dir = os.path.join(self.base_dir,model_dir)
-        self.log_dir = os.path.join(self.base_dir,log_dir)
+        self.model_dir = os.path.join(".\\",model_dir)
+        self.log_dir = os.path.join(".\\",log_dir)
 
         #生成するファイル名変数の生成
         self.file_train = os.path.join(
@@ -283,11 +284,12 @@ class Init_Boot:
             if self.base_dir != base_dir:
                 print("Current directory was changed. -> Overwrite config.")
                 del cfg #明示的に消しておく
-                self.base_dir = base_dir,
-                self.data_dir = os.path.join(self.base_dir,data_dir)
+                self.base_dir = base_dir
+                '''
+                self.data_dir = os.path.join(".\\",data_dir)
                 self.save_dir = os.path.join(self.data_dir,save_dir)
-                self.model_dir = os.path.join(self.base_dir,model_dir)
-                self.log_dir = os.path.join(self.base_dir,log_dir)
+                self.model_dir = os.path.join(".\\",model_dir)
+                self.log_dir = os.path.join(".\\",log_dir)
                 self.file_train = os.path.join(
                     self.data_dir,
                     str(os.path.splitext(os.path.basename(__file__))[0]
@@ -308,6 +310,7 @@ class Init_Boot:
                     str(os.path.splitext(os.path.basename(__file__))[0]
                     + file_model_skAE + ".dat")
                 )
+                '''
                 cfg = self.elem_set_ini()
                 self.elem_save_ini(cfg)
             else:
@@ -883,7 +886,7 @@ class Core_Estimator:
         self.file_model_pca = file_model_pca
         self.file_model_skAE = file_model_skAE
 
-    """デコーダ"""
+    """デコーダ"""  #キー入力型に改造のこと
     def elem_decord(self,X,model,scaler):
         if "IncrementalPCA" in str(model.__class__):
             dec = Core_PCA()
@@ -932,32 +935,32 @@ class Core_Estimator:
 
         key = False
         while key == False:
-            cls = KMeans(n_clusters = 2).fit(mse[:,np.newaxis])
-            if cls.cluster_centers_[0] <cls.cluster_centers_[1]:
+            clst = KMeans(n_clusters = 2).fit(mse[:,np.newaxis])
+            if clst.cluster_centers_[0] <clst.cluster_centers_[1]:
                 key = True
             else:
                 key = False
         
-        ami = adjusted_mutual_info_score(y,cls.labels_)
-        ari = adjusted_rand_score(y,cls.labels_)
+        ami = adjusted_mutual_info_score(y,clst.labels_)
+        ari = adjusted_rand_score(y,clst.labels_)
         print(
             "adjusted_mutual_info_score : {0}\nadjusted_rand_score : {1}"
             .format(ami,ari)
             )
         if ami == 1.0 and ari == 1.0:
-            thresh = sum(cls.cluster_centers_) / cls.n_clusters
+            thresh = sum(clst.cluster_centers_) / clst.n_clusters
             clf = KNeighborsClassifier(
                 n_neighbors = 2
             ).fit(mse[:,np.newaxis],y)
             print(
                 "Classification border was formed.\nCluster center = {0}\nClassification border threshold = {1}"
-            .format(cls.cluster_centers_,thresh))
+            .format(clst.cluster_centers_,thresh))
         else:
             print ("Cannot define classification border threshold!!")
             thresh = None
             clf = None
 
-        return mse,thresh,cls,clf
+        return mse,thresh,clst,clf
 
     """モデルデータと閾値のパッケージング～保存(sklearn用)"""
     def elem_save_skmodel(self,model,scaler,thresh = None,km = None,clf = None):
@@ -1038,14 +1041,28 @@ class Core_Estimator:
 
         if thresh != None:
             if "keras" in str(model.__class__): #kerasモデルのセーブ
-                self.elem_save_keras(model,thresh,km,clf)
+                self.elem_save_keras(model,scaler,thresh,km,clf)
             else:   #sklearnモデルのセーブ
-                self.elem_save_skmodel(model,thresh,km,clf)
+                self.elem_save_skmodel(model,scaler,thresh,km,clf)
         else:
             pass
 
         return thresh,km,clf
 
+    #モデルと閾値の取り出し keyに入力された数値で選択
+    def proc_load_model(self,key):
+        if key == "0": 
+            model,scaler,thresh,km,clf = est.elem_load_skmodel(
+                self.file_model_pca
+            )
+        elif key == "1":  #skAEを選択
+            model,scaler,thresh,km,clf = est.elem_load_skmodel(
+                self.file_model_skAE
+            )
+        else:
+            model,scaler,thresh,km,clf = est.elem_lord_keras()
+
+        return model,scaler,thresh,km,clf
 
 """推論器関連"""
 class Core_Predictor:
@@ -1059,9 +1076,13 @@ class Core_Predictor:
         self.est = Core_Estimator()
 
         self.model = model
+        self.scaler = scaler
         self.thresh = thresh
         self.km = km
         self.clf = clf
+        self.disp_spg = disp_spg
+        self.sr = sr
+        self.chunk = 1024
 
     """確率評価と可視化"""
     @numba.jit(cache = True)
@@ -1077,9 +1098,30 @@ class Core_Predictor:
             print("OK(False) Predict probability = {0}".format(1-proba))
 
         plt.subplot(121)
-        plt.plot(wav,color = col)
-        plt.ylim(-1,1)
-        plt.title("Waveform")
+        if self.disp_spg == False:
+            x = np.linspace(0,len(wav)/self.sr,len(wav))
+            plt.plot(x,wav,color = col)
+            plt.ylim(-1,1)
+            plt.title("Waveform")
+        else:
+            wav = wav.astype(np.float32)
+            spg = np.arange(0)
+            freq,time,spg = spectrogram(
+                wav,
+                fs = self.sr,
+                window = np.hamming(self.chunk),
+                nfft = self.chunk,
+                scaling = "spectrum",
+                mode = "magnitude"
+            )
+            plt.pcolormesh(
+                time,freq,spg,norm = LogNorm(vmax = 1e-01,vmin = 1e-04)
+            )
+            plt.colorbar()
+            plt.ylim(20,20000)
+            plt.yscale("Log")
+            plt.title("Spectrogram")
+
         plt.subplot(122)
         plt.scatter(
             np.arange(len(y_pred)),
@@ -1096,7 +1138,7 @@ class Core_Predictor:
             color = "#0000ff",
             linestyle = "--",
             linewidth = 1,
-            label = "False cluster center"
+            label = "False(OK) cluster center"
         )
 
         plt.plot(
@@ -1106,7 +1148,7 @@ class Core_Predictor:
             color = "#ff0000",
             linestyle = "--",
             linewidth = 1,
-            label = "True cluster center"
+            label = "True(NG) cluster center"
         )
 
         plt.plot(
@@ -1116,10 +1158,16 @@ class Core_Predictor:
                 color = "#000000",
                 linestyle = "--",
                 label = "Threshold")
+
         plt.ylabel("MSE")
         plt.yscale("Log")
         plt.legend()
-        plt.title("Result :" + str(result) + " mean MSE = " +str(np.mean(mse_pred)))
+        plt.title(" mean MSE = {0}" .format(str(np.mean(mse_pred))))
+        plt.suptitle(
+            "Result : {0}".format(str(result)),
+            color = col,
+            size = "xx-large"
+        )
         plt.ion()
         plt.show()
         plt.pause(5)
@@ -1141,11 +1189,11 @@ class Core_Predictor:
 
         #流し込まれたモデルによって使用するデコーダを切り替える
         if "IncrementalPCA" in str(self.model.__class__):
-            X_pred = self.pca.elem_dec_pca(X_unknown,self.model,scaler)
+            X_pred = self.pca.elem_dec_pca(X_unknown,self.model,self.scaler)
         elif "MLPRegressor" in str(self.model.__class__):
-            X_pred = self.skae.elem_dec_skl_AE(X_unknown,self.model,scaler)
+            X_pred = self.skae.elem_dec_skl_AE(X_unknown,self.model,self.scaler)
         else:
-            X_pred = self.ae.elem_dec_AE(X_unknown,self.model,scaler)
+            X_pred = self.ae.elem_dec_AE(X_unknown,self.model,self.scaler)
 
         #mseを算出し、100回の推論を行い、確率判定
         mse_pred = self.est.elem_calc_mse(X_unknown,X_pred)
@@ -1353,7 +1401,6 @@ class SubMenus:
 
 if __name__ == "__main__":
   
-    #os.system("cls")    #画面をクリア
     Boot = Init_Boot()
     base_dir,data_dir,save_dir,model_dir,log_dir,file_train,file_test,\
         file_model_pca,file_model_skAE,br,sr,r_wait,r_len,a_idx,disp_spg,\
@@ -1441,16 +1488,7 @@ if __name__ == "__main__":
                     else:
                         est = Core_Estimator()
                         #入力されたキーに応じてモデルを読み込む
-                        if keys["key_menu1"] == "0": 
-                            model,scaler,thresh,km,clf = est.elem_load_skmodel(
-                                file_model_pca
-                            )
-                        elif keys["key_menu1"] == "1":  #skAEを選択
-                            model,scaler,thresh,km,clf = est.elem_load_skmodel(
-                                file_model_skAE
-                                )
-                        else:
-                            model,scaler,thresh,km,clf = est.elem_lord_keras()
+                        model,scaler,thresh,km,clf = est.proc_load_model(keys["key_menu1"])
                         del est
                     break   #要らなさそうだけどお呪い
 
@@ -1476,19 +1514,9 @@ if __name__ == "__main__":
                         #モデルの読み込み
                         try:
                             model
-                        except:
+                        except: #モデルが無い場合、入力されたキーに応じて読み込む
                             est = Core_Estimator()
-                            #入力されたキーに応じてモデルを読み込む
-                            if keys["key_menu2"] == "0": 
-                               model,thresh,km,clf = est.elem_load_skmodel(
-                                    file_model_pca
-                                )
-                            elif keys["key_menu2"] == "1":  #skAEを選択
-                                model,thresh,km,clf = est.elem_load_skmodel(
-                                    file_model_skAE
-                                )
-                            else:
-                                model,thresh,km,clf = est.elem_lord_keras()
+                            model,scaler,thresh,km,clf = est.proc_load_model(keys["key_menu2"])
                             del est
                         else:
                             pass
@@ -1531,31 +1559,34 @@ if __name__ == "__main__":
 - セッティングモードの実装
 - 偽判定処理 …直前の推論処理の論理とデータをメイン変数に残し、渡す
 
-202012xx v0.93
+20210104 v0.93
     - コード全面書換え
-        - 定義系と処理系を一つのクラスに 
-        - 継承を廃止/委譲を導入して名前空間を明確化
+        - クラス構造を整理 旧定義系と旧処理系をまとめ、関数名のサフィックスで区別
+        - 継承の全面廃止 コンストラクタと委譲で名前空間を明確化
         - UI関連のクラスを表示とデータ収集に限定し、処理はメイン処理に移動
         - UI関連のキー入力状態をリストに格納させ、UIの制御構文を簡素化
         - モデル及びデータセットの有無をフラグ管理しUIを動的に変化させる
         - 各種進捗表示を充実
-        - リファクタリング(主に高水準APIの導入と構文の簡素化)
+        - リファクタリング(主に高水準APIの導入と構文の簡素化,例外処理の廃止)
     - numbaを導入し一部処理を高速化
     - 起動時に実行環境のバージョン判定(tensorflow動かない対策)
         - Anacondaでtensorflowが動かない環境の場合、tensorflow関連の機能をロック
-    - 前回起動時と起動ディレクトリが異なる場合パスを上書きするように
+    - カレントディレクトリ以外のパス指定を相対パス化(ネットワークブート対策)
     - 収音ウェイト時の残り時間/収音中/収音終了が表示されるように
-    - 収音後の波形表示の横軸を時間軸に
+    - 収音後の波形/スペクトログラム表示の横軸を時間軸に
     - Augmentationの進捗表示を変更 改行をなくし、終了時に情報を提示
     - Augmentation実施時、もしくはデータセットロード時に  
         スペクトログラムの周波数/時間情報を読み込むように  
         →スペクトログラム表示時、周波数軸/時間軸を表示
     - スペクトログラムのデータ量を半分に(float64 →float32)
     - スケーラーを導入 主にオートエンコーダ系の誤差縮小対策
-    - `sklearn`の`MLPRegressor`を使用したオートエンコーダを実装
-    - `tf.keras`のノイズ除去オートエンコーダを実装
-    - Estimatorを変更 手計算をやめ、k近傍法による判定器を採用
-    - 分離境界閾値の計算をクラスタセンタの中央値に変更
+    - `sklearn`の`MLPRegressor`を使用したオートエンコーダを実装 →将来的に廃止の予定
+    - `tf.keras`のノイズ除去オートエンコーダを実装 →リカレント型に改良予定
+    - Estimatorを変更 手計算をやめ、k近傍法による機械学習判定に変更
+        - k平均法クラスタリングのARI/AMIが100(y_testと同一の結果)かどうかを確認し、
+            同一である(k近傍法で同様の結果が得られる)場合にk近傍法分類器を設定
+            閾値はクラスタセンタ間中央値に取る(目安以上の意味はなくなっている)
+    - 確率判定画面表示を整理 タイトルで判定結果を大書き+色分け
     - 確率判定結果表示時、予測確率を表示するように
     - 確率判定結果のグラフでクラスタセンタを表示
     - モデル/データセットの有無でプレトレーニングモードの表示を動的に変更するように
