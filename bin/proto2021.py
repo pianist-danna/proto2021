@@ -598,7 +598,7 @@ class Core_DS:
         #NGデータセットの作成
         ng_dir = os.path.join(self.save_dir,"test\\ng")
         freq,tme,X_ng = self.elem_make_ds(ng_dir)
-        y_ng = np.ones(len(X_ok),dtype = "bool")   #NG:True(陰性)
+        y_ng = np.ones(len(X_ng),dtype = "bool")   #NG:True(陰性)
 
         #両者をスタック
         x = np.vstack((X_ok,X_ng))
