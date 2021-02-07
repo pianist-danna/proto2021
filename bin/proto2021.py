@@ -1,5 +1,5 @@
 
-"""機械学習による異音検知スクリプト プロトタイプ2020年型 Ver:α0.93"""
+"""機械学習による異音検知スクリプト プロトタイプ2021年型 Ver:α0.93.1"""
 
 #%%
 # cording = UTF-8
@@ -28,7 +28,7 @@ import numba
 """個別の関数・クラスのインポート"""
 from scipy.signal import spectrogram
 from sklearn.preprocessing import MinMaxScaler,minmax_scale
-from sklearn.decomposition import IncrementalPCA
+from sklearn.decomposition import PCA
 from sklearn.neural_network import MLPRegressor
 from sklearn.cluster import KMeans
 from sklearn.metrics.cluster import adjusted_mutual_info_score,adjusted_rand_score
@@ -634,49 +634,31 @@ class Core_DS:
 
 """PCA分類器関連"""
 class Core_PCA:
-    def __init__(self):
+    def __init__(self,X):
+        self.X = X
         self.exp_ver = exp_ver
         self.scaler = MinMaxScaler()
+        self.model = PCA(n_components = self.exp_ver)
 
-    """エンコーダの定義とプレトレーニング"""
     @numba.jit
-    def elem_train_pca(self,X):
-        #1回目の処理 指定された保持分散率に基づく次元数を決める
-        self.scaler.fit(X.reshape(len(X),-1))
-        model = IncrementalPCA()
-        model.fit(X.reshape(len(X),-1))
-        n_components = np.argmax(
-            np.cumsum(
-                model.explained_variance_ratio_
-                ) >= self.exp_ver
-            ) +1
-
-        #n_componentsが極端に少ない場合は元の次元数の1/100に制限する
-        min_dim = int((X.shape[1]*X.shape[2])/100)
-        if n_components < min_dim :
-            n_components = min_dim
-        else:
-            pass
+    def elem_train_pca(self):
+        self.X = self.scaler.fit_transform(self.X.reshape(len(self.X),-1))
+        self.model.fit(self.X)
 
         #分散保持率と次元数をプロット
-        plt.plot(np.cumsum(model.explained_variance_ratio_))
-        plt.scatter(n_components,self.exp_ver)
+        plt.plot(np.cumsum(self.model.explained_variance_ratio_))
+        plt.scatter(self.model.n_components_,self.exp_ver)
         plt.xlabel("Dimensions")
         plt.ylabel("Explained Variance")
         plt.title(
             "Explained Ver:" + str(self.exp_ver) + \
-                " -> Dimensions:" + str(n_components)
+                " -> Dimensions:" + str(self.model.n_components_)
             )
         plt.show()
 
-        #2回目処理 求めた次元数の事前学習を行い、モデルを返す
-        X = self.scaler.transform(X.reshape(len(X),-1))
-        x = IncrementalPCA(
-            n_components = n_components
-            )
-        x.fit(X)
+        print("PCA instance defined!!")
 
-        return x,self.scaler
+        return self.model,self.scaler
 
     """デコーダ"""
     def elem_dec_pca(self,X,model,scaler):
@@ -686,87 +668,63 @@ class Core_PCA:
         )   #次元削減して元に戻す
         x = scaler.inverse_transform(x)
         return x.reshape(len(X),X.shape[1],X.shape[2]) #形状を元に戻す
+        
 
-
-"""オートエンコーダ関連(2020/12時点 python3.8以後では動作しない)"""
-class Core_AE_keras:
-    
-    def __init__(self):
-        self.lr = 1.0               #初期の学習率
-        self.alpha = 0              #L2正則化の係数
-        self.dr_rate = 0.2          #ドロップアウト率
-        self.noize_rate = 0.2       #AEのノイズ付与率
+"""4層ノイズ除去リカレントオートエンコーダ python3.8以後では動作しない"""
+class Core_RAE:
+    def __init__(self,X):
+        self.X = X
+        self.log_dir = log_dir
         self.epochs = 100           #最大エポック数
+        self.reduce = 2             #層ごとの次元数の削減率の逆数
+        self.dr = 0.3               #ドロップアウト率
+        self.rdr = 0.3              #リカレントドロップアウト率
+        self.noize_rate = 0.2        #ノイズ付与率
         self.hidden_act = "selu"    #中間層の活性化関数
         self.monitor = "val_loss"   #コールバック呼び出しの指標
         self.scaler = MinMaxScaler()
 
-    """オートエンコーダ本体の定義"""
-    def def_AE(self,X):
-        input_dim = (X.shape[1] * X.shape[2])
         encoder = tf.keras.models.Sequential([
-            tf.keras.layers.Flatten(input_shape = [X.shape[1],X.shape[2]]),
+            tf.keras.layers.Permute((2,1),input_shape=[X.shape[1], X.shape[2]]),
             tf.keras.layers.GaussianNoise(self.noize_rate),
-            tf.keras.layers.Dense(
-                int(input_dim/50),
-                kernel_initializer="he_normal",
-                kernel_regularizer=tf.keras.regularizers.l2(self.alpha),
-                ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation(self.hidden_act),
-
-            tf.keras.layers.Dense(
-                int(input_dim/50/50),
-                kernel_initializer="he_normal",
-                kernel_regularizer=tf.keras.regularizers.l2(self.alpha),
-                ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation(self.hidden_act),
-
-        ])
+            tf.keras.layers.GRU(int(X.shape[1] / self.reduce), return_sequences=True, dropout = self.dr, recurrent_dropout = self.rdr),
+            tf.keras.layers.GRU(int(X.shape[1] / (self.reduce ** 2)), return_sequences=True),
+            tf.keras.layers.GRU(int(X.shape[1] / (self.reduce ** 3)), return_sequences=True),
+            tf.keras.layers.GRU(int(X.shape[1] / (self.reduce ** 4)))
+            ],name = "encoder")
         decoder = tf.keras.models.Sequential([
-            tf.keras.layers.Dense(
-                int(input_dim/50),
-                kernel_initializer="he_normal",
-                kernel_regularizer=tf.keras.regularizers.l2(self.alpha),
-                input_shape = [int(input_dim /50/50)]
+            tf.keras.layers.RepeatVector(X.shape[2], input_shape=[int(X.shape[1] / (self.reduce ** 4))]),
+            tf.keras.layers.GRU(int(X.shape[1] / (self.reduce ** 3)), return_sequences=True),
+            tf.keras.layers.GRU(int(X.shape[1] / (self.reduce ** 2)), return_sequences=True),
+            tf.keras.layers.GRU(int(X.shape[1] / self.reduce), return_sequences=True, dropout = self.dr, recurrent_dropout = self.rdr),
+            tf.keras.layers.TimeDistributed(
+                tf.keras.layers.Dense(X.shape[1], activation="sigmoid")
             ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation(self.hidden_act),
+            tf.keras.layers.Permute((2,1))
+            ],name = "decoder")
+        self.model = tf.keras.models.Sequential([encoder, decoder],name = "autoencoder")
 
-            tf.keras.layers.Dense(
-                input_dim,
-                kernel_initializer="he_normal",
-                kernel_regularizer=tf.keras.regularizers.l2(self.alpha),
-            ),
-            tf.keras.layers.BatchNormalization(),
-            tf.keras.layers.Activation("sigmoid"),
-            tf.keras.layers.Reshape([X.shape[1],X.shape[2]])
-        ])
+        self.model.summary()
 
-        x = tf.keras.models.Sequential([encoder,decoder])
-        x.compile(
-            optimizer=tf.keras.optimizers.Nadam(lr = self.lr),
-            loss='binary_crossentropy',
-            metrics=['accuracy']
+        self.model.compile(
+            loss="binary_crossentropy", 
+            optimizer=tf.keras.optimizers.Nadam(),   #勾配クリッピング clipnorm=1.
+            metrics=["accuracy"]
         )
 
-        return x
-
-    """早期打ち切りコールバックの定義"""
-    def def_cb_earlystop(self,monitor):
-        return tf.keras.callbacks.EarlyStopping(
-            monitor = monitor,
+        self.cb_es = tf.keras.callbacks.EarlyStopping(
+            monitor = self.monitor,
             patience= 10,
             min_delta = 0.0001)
 
-    """学習率減衰コールバックの定義"""
-    def def_cb_reduce(self,monitor):
-        return tf.keras.callbacks.ReduceLROnPlateau(
-            monitor = monitor,
-            factor = 0.1,
+        self.cb_rd =  tf.keras.callbacks.ReduceLROnPlateau(
+            monitor = self.monitor,
             patience = 5,
             verbose= 1)
+
+        self.cb_tb = tf.keras.callbacks.TensorBoard(
+            os.path.join(self.log_dir,time.strftime("run_%Y_%m_%d-%H_%M_%S"))
+        )
 
     """学習曲線の表示"""
     def elem_vis_learn_curve(self,hist):
@@ -775,6 +733,7 @@ class Core_AE_keras:
         plt.plot(hist.history['val_accuracy'])
         plt.ylabel("accuracy")
         plt.xlabel("epochs")
+        plt.yscale("Log")
         plt.legend(["Train","val"])
         plt.title("Accuracy")
 
@@ -783,46 +742,42 @@ class Core_AE_keras:
         plt.plot(hist.history['val_loss'])
         plt.ylabel("loss")
         plt.xlabel("epochs")
+        plt.yscale("Log")
         plt.legend(["Train","val"])
         plt.title("Loss")
 
+        plt.suptitle("Learning curve")
         plt.show()
 
-    """プレトレーニング"""
-    def elem_train_AE(self,X):
+    #プレトレーニング
+    def elem_train_AE(self):
+        self.X = self.scaler.fit_transform(
+            self.X.reshape(len(self.X),-1)
+        ).reshape(len(self.X),self.X.shape[1],self.X.shape[2])
 
-        x = self.def_AE(X)
-
-        cb_es = self.def_cb_earlystop(monitor = self.monitor)
-        cb_rd = self.def_cb_reduce(monitor = self.monitor)
-
-        X = self.scaler.fit_transform(X.reshape(len(X),-1)).reshape(len(X),X.shape[1],X.shape[2])
-
-        hist = x.fit(
-            X,
-            X,
+        self.hist = self.model.fit(
+            self.X,
+            self.X,
             epochs = self.epochs,
-            callbacks = [cb_es,cb_rd],
+            callbacks = [self.cb_es,self.cb_rd,self.cb_tb],
             validation_split = 0.05,
             shuffle = True,
             use_multiprocessing=True
         )
 
         print('Autoencoder learning is over!')
-        x.summary()
-        self.elem_vis_learn_curve(hist)
+        self.elem_vis_learn_curve(self.hist)
 
-        return x,self.scaler
-
+        return self.model,self.scaler
+    
     """デコーダ"""
     def elem_dec_AE(self,X,model,scaler):
         x = scaler.transform(X.reshape(len(X),-1)).reshape(len(X),X.shape[1],X.shape[2])
         x = model.predict(x)
         return scaler.inverse_transform(x.reshape(len(X),-1)).reshape(len(X),X.shape[1],X.shape[2])
-        
 
 
-"""sklearnによるオートエンコーダ"""
+"""sklearnによるオートエンコーダ 廃止予定(くそ重い)""" 
 class Core_AE_sklearn:
     def __init__(self):
         self.lr = 1.0             #初期の学習率
@@ -886,17 +841,22 @@ class Core_Estimator:
         self.file_model_pca = file_model_pca
         self.file_model_skAE = file_model_skAE
 
-    """デコーダ"""  #キー入力型に改造のこと
+    """デコーダ""" 
     def elem_decord(self,X,model,scaler):
-        if "IncrementalPCA" in str(model.__class__):
-            dec = Core_PCA()
-            X_dec = dec.elem_dec_pca(X,model,scaler)
+        if "PCA" in str(model.__class__):
+            x = scaler.transform(X.reshape(len(X),-1))
+            x = model.inverse_transform(
+                model.transform(x)
+            )   #次元削減して元に戻す
+            x = scaler.inverse_transform(x)
+            X_dec =  x.reshape(len(X),X.shape[1],X.shape[2])
         elif "MLPRegressor" in str(model.__class__):
             dec = Core_AE_sklearn()
             X_dec = dec.elem_dec_skl_AE(X,model,scaler)
         else:
-            dec = Core_AE_keras()
-            X_dec = dec.elem_dec_AE(X,model,scaler)
+            x = scaler.transform(X.reshape(len(X),-1)).reshape(len(X),X.shape[1],X.shape[2])
+            x = model.predict(x)
+            X_dec =  scaler.inverse_transform(x.reshape(len(X),-1)).reshape(len(X),X.shape[1],X.shape[2])
 
         return X_dec
 
@@ -916,18 +876,6 @@ class Core_Estimator:
             )
         print("threshold:{}".format(x))
         return x
-
-    """MSEと分離境界を計算する
-    def elem_calc_clf_thresh(self,X,X_dec,y):
-        mse = self.elem_calc_mse(X,X_dec)
-        if mse[y].min() > mse[np.logical_not(y)].max():
-            thresh = self.elem_calc_thresh(y,mse)
-        else:
-            print ("Cannot define classification border threshold!!")
-            thresh = None
-
-        return mse,thresh
-    """
 
     """k-meansクラスタリングで評価し、分離境界と分類器を生成"""
     def elem_clustering(self,X,X_dec,y):
@@ -972,7 +920,7 @@ class Core_Estimator:
             "clf":clf
         }
         """モデルタイプの判定"""
-        if "IncrementalPCA" in str(model.__class__):
+        if "PCA" in str(model.__class__):
             filename = self.file_model_pca
         else:
             filename = self.file_model_skAE
@@ -1006,7 +954,7 @@ class Core_Estimator:
         thresh = x["thresh"]
         km = x["km"]
         clf = x["clf"]
-        if "IncrementalPCA" in str(model.__class__):
+        if "PCA" in str(model.__class__):
             print("Loaded learned model. Type : PCA")
         else:
             print("Loaded learned model. Type : Scikit-Learn AE")
@@ -1064,15 +1012,13 @@ class Core_Estimator:
 
         return model,scaler,thresh,km,clf
 
+
 """推論器関連"""
 class Core_Predictor:
     def __init__(self):
-        #全クラスをたたき起こす
+        #必要なクラスをたたき起こす
         self.rec = Core_Audio()
         self.ds = Core_DS()
-        self.pca = Core_PCA()
-        self.skae = Core_AE_sklearn()
-        self.ae = Core_AE_keras()
         self.est = Core_Estimator()
 
         self.model = model
@@ -1081,18 +1027,23 @@ class Core_Predictor:
         self.km = km
         self.clf = clf
         self.disp_spg = disp_spg
+        self.br = br
         self.sr = sr
         self.chunk = 1024
+        self.log_dir = log_dir
+        self.save_dir = save_dir
 
     """確率評価と可視化"""
     @numba.jit(cache = True)
     def elem_proba_eval(self,mse_pred,y_pred,wav):
         proba =  np.count_nonzero(y_pred)/len(y_pred)
         if proba >0.5:
+            predict = True
             result = "NG"
             col = "#ff0000"
             print("NG(True) Predict probability = {0}".format(proba))
         else:
+            predict = False
             result = "OK"
             col = "#0000ff"
             print("OK(False) Predict probability = {0}".format(1-proba))
@@ -1174,7 +1125,7 @@ class Core_Predictor:
         plt.clf()
         plt.close()
 
-        return result
+        return predict
 
     """集音～Augmentation～推論～評価"""
     @numba.jit(cache = True)
@@ -1187,20 +1138,43 @@ class Core_Predictor:
         #100回Augmentationする
         freq,tme,X_unknown,= self.ds.elem_aug(valid_wav,100)
 
-        #流し込まれたモデルによって使用するデコーダを切り替える
-        if "IncrementalPCA" in str(self.model.__class__):
-            X_pred = self.pca.elem_dec_pca(X_unknown,self.model,self.scaler)
-        elif "MLPRegressor" in str(self.model.__class__):
-            X_pred = self.skae.elem_dec_skl_AE(X_unknown,self.model,self.scaler)
-        else:
-            X_pred = self.ae.elem_dec_AE(X_unknown,self.model,self.scaler)
+        #デコード(読み込まれたモデルによる振り分けはCore_est側で実施してくれる)
+        X_pred = self.est.elem_decord(X_unknown,self.model,self.scaler)
 
         #mseを算出し、100回の推論を行い、確率判定
         mse_pred = self.est.elem_calc_mse(X_unknown,X_pred)
         y_pred = self.clf.predict(mse_pred[:,np.newaxis])
-        result = self.elem_proba_eval(mse_pred,y_pred,form_wav)
+        predict = self.elem_proba_eval(mse_pred,y_pred,form_wav)
 
-        return valid_wav,result
+        return x,predict
+
+    """判定結果の記録と再学習に必要なデータの保存"""
+    def proc_verification(self,bulkwave,predict):
+        result = bool(int(input("How was the actual result? [0:OK 1:NG]")))
+        #print("result:{0}".format(result))
+        dt = datetime.datetime.now()
+        data_time = dt.strftime("%Y%m%d%H%M%S")
+
+        #日時を取得
+        log_result = data_time + "," + str(predict) +"." + str(result)
+
+        #ログファイルに記録
+        with open(os.path.join(self.log_dir,"pred_result.csv"),mode = "a") as f:
+            f.write(str(log_result + "\n"))
+
+        #predictとresultが異なる場合、音声を保存する
+        if predict != result:
+            filename = data_time + "_" + str(result) + ".wav"
+            pa = pyaudio.PyAudio()
+            x = wave.open(
+                os.path.join(self.save_dir,"test","valid",filename),
+                "wb")
+            x.setnchannels(1)
+            x.setsampwidth(pa.get_sample_size(self.br))
+            x.setframerate(self.sr)
+            x.writeframes(bulkwave)
+            x.close()
+            print("Saved! Filename:{0}".format(filename))
 
 
 #可視化ツールとデバッグコード
@@ -1463,8 +1437,8 @@ if __name__ == "__main__":
 
                         #入力されたキーに応じてプレトレーニングを行う
                         if keys["key_menu1"] == "0": 
-                            pca = Core_PCA()
-                            model,scaler = pca.elem_train_pca(X_train)
+                            pca = Core_PCA(X_train)
+                            model,scaler = pca.elem_train_pca()
                             del pca
 
                         elif keys["key_menu1"] == "1": 
@@ -1473,8 +1447,8 @@ if __name__ == "__main__":
                             del skae
 
                         else: 
-                            krae = Core_AE_keras()
-                            model,scaler = krae.elem_train_AE(X_train)
+                            krae = Core_RAE(X_train) #Core_AE_keras()
+                            model,scaler = krae.elem_train_AE()
                             del krae
 
                         est = Core_Estimator()
@@ -1522,8 +1496,9 @@ if __name__ == "__main__":
                             pass
                         
                         pred = Core_Predictor()
-                        pred.proc_predict()
-                        del pred
+                        valid_bulk,predict = pred.proc_predict()
+                        pred.proc_verification(valid_bulk,predict)
+                        del pred,valid_bulk,predict
 
                     elif keys["key_menu2"] == "9":  #ループを抜ける
                         break
@@ -1555,11 +1530,10 @@ if __name__ == "__main__":
 以下備忘メモ
 
 やること
-- メイン引数の辞書化
+- メイン引数の辞書化 →0.94では実装済
 - セッティングモードの実装
-- 偽判定処理 …直前の推論処理の論理とデータをメイン変数に残し、渡す
 
-20210104 v0.93
+20210207 v0.93.1
     - コード全面書換え
         - クラス構造を整理 旧定義系と旧処理系をまとめ、関数名のサフィックスで区別
         - 継承の全面廃止 コンストラクタと委譲で名前空間を明確化
@@ -1581,7 +1555,7 @@ if __name__ == "__main__":
     - スペクトログラムのデータ量を半分に(float64 →float32)
     - スケーラーを導入 主にオートエンコーダ系の誤差縮小対策
     - `sklearn`の`MLPRegressor`を使用したオートエンコーダを実装 →将来的に廃止の予定
-    - `tf.keras`のノイズ除去オートエンコーダを実装 →リカレント型に改良予定
+    - `tf.keras`のノイズ除去リカレントオートエンコーダを実装
     - Estimatorを変更 手計算をやめ、k近傍法による機械学習判定に変更
         - k平均法クラスタリングのARI/AMIが100(y_testと同一の結果)かどうかを確認し、
             同一である(k近傍法で同様の結果が得られる)場合にk近傍法分類器を設定
@@ -1591,6 +1565,8 @@ if __name__ == "__main__":
     - 確率判定結果のグラフでクラスタセンタを表示
     - モデル/データセットの有無でプレトレーニングモードの表示を動的に変更するように
     - モデルの有無で、推論モードで選択できるモデルタイプが制限されるように
+    - 推論実施後、実際の判定結果を問い合わせ、ログに残すように
+    - 推論結果と実際の判定結果が異なる場合、その際の推論音声データを保存するように
 
 20201205 ｖ0.92
     入力信号のレベルが低い際に特徴量が埋没しないよう、
